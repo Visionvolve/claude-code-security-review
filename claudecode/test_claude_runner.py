@@ -6,7 +6,7 @@ Unit tests for SimpleClaudeRunner.
 import json
 import os
 import subprocess
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 from pathlib import Path
 
 from claudecode.github_action_audit import SimpleClaudeRunner
@@ -41,6 +41,7 @@ class TestSimpleClaudeRunner:
         assert error == ''
         mock_run.assert_called_once_with(
             ['claude', '--version'],
+            env=ANY,  # fork: child_env() without OIDC request credentials
             capture_output=True,
             text=True,
             timeout=10

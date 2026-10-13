@@ -227,8 +227,11 @@ class SimpleClaudeRunner:
                 'claude',
                 '--output-format', 'json',
                 '--model', DEFAULT_CLAUDE_MODEL,
-                '--disallowed-tools', 'Bash(ps:*)'
+                '--disallowed-tools', 'Bash(ps:*)',
             ]
+            # Fork: belt and braces against prompt-injected reads of the
+            # federation material (identity JWT, SDK/CLI credentials cache).
+            cmd += workload_identity.secret_dir_denies()
             
             # Run Claude Code with retry logic
             NUM_RETRIES = 3
@@ -335,6 +338,7 @@ class SimpleClaudeRunner:
         try:
             result = subprocess.run(
                 ['claude', '--version'],
+                env=workload_identity.child_env(),
                 capture_output=True,
                 text=True,
                 timeout=10

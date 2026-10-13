@@ -286,6 +286,19 @@ def child_env() -> dict:
     return {k: v for k, v in os.environ.items() if k not in CHILD_ENV_DENYLIST}
 
 
+def secret_dir_denies() -> list:
+    """Claude Code --disallowed-tools rules that block reading the federation
+    directory. Empty when federation is not active."""
+    if _active is None:
+        return []
+    d = _active.token_dir.rstrip("/")
+    # '//' prefix = absolute path in Claude Code permission rules.
+    # Bash is not allow-listed for the CLI (non-interactive mode denies it), and
+    # reads outside the working directory need permission it cannot get; these
+    # rules make the federation directory explicitly off-limits on top of that.
+    return [f"Read(/{d}/**)", f"Grep(/{d}/**)", f"Glob(/{d}/**)"]
+
+
 def describe_auth_mode() -> str:
     """Which credential the SDK/CLI will use. Never returns a secret."""
     if os.environ.get("ANTHROPIC_API_KEY", "").strip():

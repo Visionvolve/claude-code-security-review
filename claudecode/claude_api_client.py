@@ -200,7 +200,9 @@ class ClaudeAPIClient:
                 return False, {}, "Failed to parse JSON response"
                 
         except Exception as e:
-            logger.exception(f"Error during single finding security analysis: {redact_exception(e)}")
+            # Fork: logger.error, not logger.exception -- a raw traceback carries str(e)
+            # into claudecode-error.log, which is uploaded as an (unmasked) artifact.
+            logger.error(f"Error during single finding security analysis: {redact_exception(e)}")
             return False, {}, f"Single finding security analysis failed: {redact_exception(e)}"
 
     

@@ -211,3 +211,25 @@ class TestEndToEndNoLeak:
         assert code != 0
         assert "runner-request-token" not in out + err + caplog.text
         _assert_clean({"stdout": out, "stderr": err, "logs": caplog.text}, os.environ["RUNNER_TEMP"])
+
+
+class TestCliDenies:
+    def test_cli_denies_federation_dir(self, monkeypatch, tmp_path):
+        _federation_env(monkeypatch, tmp_path)
+        from claudecode.github_action_audit import SimpleClaudeRunner
+        captured = {}
+
+        def fake_run(cmd, **kw):
+            captured["cmd"] = cmd
+            return Mock(returncode=0, stderr="", stdout=json.dumps({
+                "type": "result", "is_error": False, "result": json.dumps({"findings": []})}))
+
+        with patch("claudecode.workload_identity.requests.get", _oidc_get):
+            workload_identity.setup_from_env()
+            d = workload_identity._active.token_dir
+            with patch("subprocess.run", side_effect=fake_run):
+                ok, _, _ = SimpleClaudeRunner().run_security_audit(tmp_path, "p")
+        assert ok
+        assert f"Read(/{d}/**)" in captured["cmd"]
+        assert d.startswith("/")
+        assert not any(SENTINEL_JWT in a for a in captured["cmd"])  # never on argv
