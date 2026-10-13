@@ -31,6 +31,8 @@ errors into a warning and a green check. The fork changes two things, and nothin
    uses the configured model; upstream hard-coded the retired `claude-3-5-haiku-20241022`,
    so that call always failed and filtering was silently switched off.
 
+The default model is `claude-opus-5-5`; upstream's `claude-opus-4-1-20250805` returns 404.
+
 Also: a run skipped because the PR was already reviewed now emits a `::notice::`. Set
 `run-every-commit: true` to review every push.
 
