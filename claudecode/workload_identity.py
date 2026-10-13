@@ -178,6 +178,16 @@ def refresh_if_active() -> None:
         _active.refresh()
 
 
+# The Claude Code CLI reads PR-controlled content. It needs the identity token
+# file, not the runner's ability to mint new OIDC tokens for arbitrary audiences.
+CHILD_ENV_DENYLIST = ("ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+
+
+def child_env() -> dict:
+    """Environment for the Claude Code subprocess, without the OIDC request credentials."""
+    return {k: v for k, v in os.environ.items() if k not in CHILD_ENV_DENYLIST}
+
+
 def describe_auth_mode() -> str:
     """Which credential the SDK/CLI will use. Never returns a secret."""
     if os.environ.get("ANTHROPIC_API_KEY", "").strip():

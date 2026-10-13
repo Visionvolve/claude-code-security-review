@@ -209,3 +209,23 @@ class TestFailClosed:
                        "description": "SQL injection via user input", "exploit_scenario": "x"}
             with pytest.raises(ClaudeAPIError, match="401"):
                 f.filter_findings([finding])
+
+
+class TestCliIsolation:
+    @patch("subprocess.run")
+    def test_cli_gets_fresh_jwt_and_no_oidc_request_creds(self, mock_run, monkeypatch, tmp_path):
+        _federation_env(monkeypatch)
+        oidc = _OIDC()
+        with patch("claudecode.workload_identity.requests.get", oidc):
+            workload_identity.setup_from_env()
+            calls_after_setup = oidc.calls
+            mock_run.return_value = Mock(returncode=0, stderr="", stdout=json.dumps({
+                "type": "result", "subtype": "success", "is_error": False,
+                "result": json.dumps({"findings": []})}))
+            ok, _, _ = SimpleClaudeRunner().run_security_audit(tmp_path, "prompt")
+        assert ok
+        assert oidc.calls == calls_after_setup + 1  # refreshed right before the CLI
+        env = mock_run.call_args.kwargs["env"]
+        assert "ACTIONS_ID_TOKEN_REQUEST_URL" not in env
+        assert "ACTIONS_ID_TOKEN_REQUEST_TOKEN" not in env
+        assert env["ANTHROPIC_IDENTITY_TOKEN_FILE"] == os.environ["ANTHROPIC_IDENTITY_TOKEN_FILE"]

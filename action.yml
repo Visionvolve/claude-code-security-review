@@ -178,13 +178,6 @@ runs:
         EOF
         echo "Created ClaudeCode reservation marker for PR #$PR_NUMBER"
     
-    - name: Save ClaudeCode reservation to cache
-      if: steps.claudecode-check.outputs.enable_claudecode == 'true' && github.event_name == 'pull_request'
-      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0 pinned to commit hash
-      with:
-        path: .claudecode-marker
-        key: claudecode-${{ github.repository_id }}-pr-${{ github.event.pull_request.number }}-${{ github.sha }}
-    
     - name: Set up Node.js
       if: steps.claudecode-check.outputs.enable_claudecode == 'true'
       uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0 pinned to commit hash
@@ -323,17 +316,22 @@ runs:
         elif ! jq -e . claudecode/claudecode-results.json > /dev/null 2>&1; then
           SCAN_FAILED="ClaudeCode results file is not valid JSON"
         elif jq -e '.error' claudecode/claudecode-results.json > /dev/null 2>&1; then
-          SCAN_FAILED="ClaudeCode error: $(jq -r '.error' claudecode/claudecode-results.json | head -c 1000)"
+          SCAN_FAILED="ClaudeCode error: $(jq -r '.error | tostring | .[0:1000]' claudecode/claudecode-results.json)"
         elif ! jq -e '.review_status == "completed" and (.findings | type == "array")' claudecode/claudecode-results.json > /dev/null 2>&1; then
           SCAN_FAILED="ClaudeCode did not report a completed review"
         fi
         
+        # Fork: CLI/model output is PR-influenced; never let it run workflow commands.
+        STOP_TOKEN="stop-$(date +%s%N)-$RANDOM$RANDOM"
         if [ -n "$SCAN_FAILED" ]; then
-          echo "::error::Security review FAILED: $SCAN_FAILED"
+          echo "::error::Security review FAILED: $(head -n 1 <<<"$SCAN_FAILED")"
+          echo "::stop-commands::${STOP_TOKEN}"
+          echo "$SCAN_FAILED"
           if [ -f claudecode/claudecode-error.log ]; then
             echo "Error log (tail):"
             tail -n 60 claudecode/claudecode-error.log
           fi
+          echo "::${STOP_TOKEN}::"
           cp claudecode/claudecode-results.json ${{ github.workspace }}/claudecode-results.json 2>/dev/null || true
           cp claudecode/claudecode-error.log ${{ github.workspace }}/claudecode-error.log 2>/dev/null || true
           echo "::endgroup::"
@@ -341,7 +339,9 @@ runs:
         fi
         
         echo "ClaudeCode results preview:"
+        echo "::stop-commands::${STOP_TOKEN}"
         head -n 300 claudecode/claudecode-results.json || echo "Unable to preview results"
+        echo "::${STOP_TOKEN}::"
         CLAUDECODE_FINDINGS_COUNT=$(jq -r '.findings | length' claudecode/claudecode-results.json)
         echo "findings_count=$CLAUDECODE_FINDINGS_COUNT" >> $GITHUB_OUTPUT
         jq '.findings' claudecode/claudecode-results.json > findings.json
@@ -365,6 +365,15 @@ runs:
         
         echo "::endgroup::"
     
+    
+    # Fork: saved only after a successful scan. Upstream saved it before the scan,
+    # so a failed review was skipped (green) on re-run or on the next push.
+    - name: Save ClaudeCode run marker to cache
+      if: success() && steps.claudecode-check.outputs.enable_claudecode == 'true' && github.event_name == 'pull_request'
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0 pinned to commit hash
+      with:
+        path: .claudecode-marker
+        key: claudecode-${{ github.repository_id }}-pr-${{ github.event.pull_request.number }}-${{ github.sha }}
     
     - name: Upload scan results
       if: always() && inputs.upload-results == 'true'

@@ -239,6 +239,7 @@ class SimpleClaudeRunner:
                     cmd,
                     input=prompt,  # Pass prompt via stdin
                     cwd=repo_dir,
+                    env=workload_identity.child_env(),
                     capture_output=True,
                     text=True,
                     timeout=self.timeout_seconds

@@ -33,8 +33,15 @@ errors into a warning and a green check. The fork changes two things, and nothin
 
 The default model is `claude-opus-5-5`; upstream's `claude-opus-4-1-20250805` returns 404.
 
-Also: a run skipped because the PR was already reviewed now emits a `::notice::`. Set
-`run-every-commit: true` to review every push.
+Also:
+- The "already reviewed" cache marker is saved only after a successful scan, so a failed
+  review is retried rather than skipped. A skipped run emits a `::notice::`; set
+  `run-every-commit: true` to review every push.
+- The Claude Code subprocess does not get `ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN`, so
+  PR content cannot get it to mint OIDC tokens for other audiences. It only gets the
+  identity-token file.
+- CLI and model output is printed between `::stop-commands::` markers, so it cannot
+  run workflow commands.
 
 ```yaml
 permissions:
