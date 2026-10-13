@@ -189,7 +189,9 @@ runs:
       if: steps.claudecode-check.outputs.enable_claudecode == 'true'
       uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0 pinned to commit hash
       with:
-        node-version: '18'
+        # Fork: current Claude Code needs Node >= 22. On Node 18 npm silently
+        # installs an old CLI that rejects current models.
+        node-version: '22'
     
     - name: Install dependencies
       shell: bash
