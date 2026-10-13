@@ -435,5 +435,6 @@ class TestClaudeRunnerEdgeCases:
             )
         
         assert success is False
-        assert 'Unexpected error' in error
+        # Fork: generic exception text is redacted to the type name
+        assert 'Unexpected error' not in error and 'Exception' in error
         assert results == {}

@@ -14,6 +14,7 @@ from claudecode.constants import (
 )
 from claudecode.json_parser import parse_json_with_fallbacks
 from claudecode.logger import get_logger
+from claudecode.workload_identity import redact_exception
 from claudecode import workload_identity
 
 logger = get_logger(__name__)
@@ -86,7 +87,7 @@ class ClaudeAPIClient:
             logger.info("Claude API access validated successfully")
             return True, ""
         except Exception as e:
-            error_msg = str(e)
+            error_msg = redact_exception(e)
             logger.error(f"Claude API validation failed: {error_msg}")
             return False, f"API validation failed: {error_msg}"
     
@@ -140,7 +141,7 @@ class ClaudeAPIClient:
                 return True, response_text, ""
                 
             except Exception as e:
-                error_msg = str(e)
+                error_msg = redact_exception(e)
                 last_error = error_msg
                 logger.error(f"Claude API call failed: {error_msg}")
                 
@@ -199,8 +200,8 @@ class ClaudeAPIClient:
                 return False, {}, "Failed to parse JSON response"
                 
         except Exception as e:
-            logger.exception(f"Error during single finding security analysis: {str(e)}")
-            return False, {}, f"Single finding security analysis failed: {str(e)}"
+            logger.exception(f"Error during single finding security analysis: {redact_exception(e)}")
+            return False, {}, f"Single finding security analysis failed: {redact_exception(e)}"
 
     
     def _generate_system_prompt(self) -> str:
@@ -368,7 +369,7 @@ Respond with EXACTLY this JSON structure (no markdown, no code blocks):
             return True, content, ""
             
         except Exception as e:
-            error_msg = f"Error reading file {file_path}: {str(e)}"
+            error_msg = f"Error reading file {file_path}: {redact_exception(e)}"
             logger.error(error_msg)
             return False, "", error_msg
 

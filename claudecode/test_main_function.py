@@ -73,7 +73,9 @@ class TestMainFunction:
             captured = capsys.readouterr()
             output = json.loads(captured.out)
             assert 'Failed to initialize GitHub client' in output['error']
-            assert 'Token invalid' in output['error']
+            # Fork: generic exception text is redacted to the type name
+            assert 'Token invalid' not in output['error']
+            assert 'Failed to initialize GitHub client' in output['error']
     
     @patch('claudecode.github_action_audit.SimpleClaudeRunner')
     @patch('claudecode.github_action_audit.GitHubActionClient')
@@ -207,7 +209,8 @@ class TestMainFunction:
             captured = capsys.readouterr()
             output = json.loads(captured.out)
             assert 'Failed to fetch PR data' in output['error']
-            assert 'API error' in output['error']
+            assert 'API error' not in output['error']
+            assert 'Failed to fetch PR data: Exception' in output['error']
     
     @patch('pathlib.Path.cwd')
     @patch('claudecode.github_action_audit.get_security_audit_prompt')
@@ -509,7 +512,7 @@ class TestMainFunction:
                 
                 captured = capsys.readouterr()
                 output = json.loads(captured.out)
-                assert 'Unexpected error' in output['error']
+                assert output['error'].startswith('ConfigurationError') or output['error'].startswith('Unexpected error')
 
 
 class TestAuditFailureModes:

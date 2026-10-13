@@ -20,8 +20,10 @@ consumers never exchange the same JWT.
 The JWT and the exchanged access token are never printed.
 """
 
+import atexit
 import json
 import os
+import shutil
 import threading
 from typing import Optional
 
@@ -40,7 +42,80 @@ SHADOWING_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUT
 
 
 class WorkloadIdentityError(RuntimeError):
-    """Raised when the GitHub OIDC token cannot be obtained."""
+    """Raised when the GitHub OIDC token cannot be obtained. Messages never carry secrets."""
+
+
+# --- Secret hygiene ---------------------------------------------------------
+# Every credential value this process learns is registered here, so it can be
+# scrubbed from any text that leaves the process (results JSON, logs).
+_secrets: set = set()
+_MASK_FD_ENV = "CLAUDECODE_MASK_FD"
+
+
+def register_secret(value: str) -> None:
+    """Remember a secret for scrub() and mask it in the GitHub Actions log.
+
+    Defence in depth: the value is never printed. The step redirects stdout and
+    stderr to files, so the ``::add-mask::`` command goes to a dedicated fd that
+    action.yml connects to the step's real stdout (``CLAUDECODE_MASK_FD``).
+    JWTs and Anthropic tokens are single-line base64url/ASCII, so masking the raw
+    value also covers JSON-escaped forms (nothing in them needs escaping).
+    """
+    if not value:
+        return
+    _secrets.add(value)
+    fd = os.environ.get(_MASK_FD_ENV, "")
+    if fd.isdigit():
+        try:
+            os.write(int(fd), f"::add-mask::{value}\n".encode())
+        except OSError:
+            pass
+
+
+def scrub(text: str) -> str:
+    """Replace every registered secret (and env credentials) in ``text`` with ***."""
+    if not text:
+        return text
+    values = set(_secrets)
+    for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+                "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "GITHUB_TOKEN"):
+        v = os.environ.get(var, "")
+        if len(v) >= 8:
+            values.add(v)
+    for v in sorted(values, key=len, reverse=True):
+        text = text.replace(v, "***")
+    return text
+
+
+def redact_exception(e: BaseException) -> str:
+    """A safe one-line description of an exception.
+
+    Never ``str(e)`` for HTTP/SDK errors: those can embed request bodies or
+    headers. Keeps the HTTP status, Anthropic's error type and request id only.
+    """
+    name = type(e).__name__
+    status = getattr(e, "status_code", None)
+    if status is None:
+        resp = getattr(e, "response", None)
+        status = getattr(resp, "status_code", None)
+    if status is not None:
+        err_type = ""
+        body = getattr(e, "body", None)
+        if isinstance(body, dict):
+            inner = body.get("error") if isinstance(body.get("error"), dict) else body
+            err_type = str(inner.get("type", "")) if isinstance(inner, dict) else ""
+        req_id = getattr(e, "request_id", None) or ""
+        parts = [f"{name}: HTTP {status}"]
+        if err_type:
+            parts.append(f"type={err_type}")
+        if req_id:
+            parts.append(f"request_id={req_id}")
+        return " ".join(parts)
+    if type(e).__module__.startswith("claudecode"):
+        # Our own exception types; their messages are built from redacted parts
+        # and scrubbed again here.
+        return scrub(f"{name}: {e}")[:2000]
+    return name
 
 
 def is_configured() -> bool:
@@ -96,7 +171,10 @@ class WorkloadIdentity:
     def refresh(self) -> None:
         """Write a fresh GitHub OIDC JWT (new ``jti``) to the token file."""
         token = _fetch_github_oidc_token(self.audience)
+        register_secret(token)  # mask before anything else can happen with it
         with self._lock:
+            if self._stop.is_set():
+                return  # never recreate the file after cleanup
             os.makedirs(self.token_dir, mode=0o700, exist_ok=True)
             tmp = self.token_file + ".tmp"
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -141,19 +219,19 @@ class WorkloadIdentity:
             try:
                 self.refresh()
             except Exception as e:  # keep going; the next exchange will surface it
-                logger.warning(f"Failed to refresh GitHub OIDC identity token: {e}")
+                logger.warning(f"Failed to refresh GitHub OIDC identity token: {redact_exception(e)}")
 
     def stop(self) -> None:
+        """Stop refreshing and delete the JWT file, the profile and the SDK/CLI
+        credentials cache (``config/credentials/``, which holds the exchanged
+        access token). Idempotent."""
         self._stop.set()
-        try:
-            for root, dirs, files in os.walk(self.token_dir, topdown=False):
-                for name in files:
-                    os.remove(os.path.join(root, name))
-                for name in dirs:
-                    os.rmdir(os.path.join(root, name))
-            os.rmdir(self.token_dir)
-        except OSError:
-            pass
+        if self._thread is not None and self._thread is not threading.current_thread():
+            self._thread.join(timeout=5)
+        with self._lock:
+            shutil.rmtree(self.token_dir, ignore_errors=True)
+        for var in ("ANTHROPIC_IDENTITY_TOKEN_FILE", "ANTHROPIC_CONFIG_DIR", "ANTHROPIC_PROFILE"):
+            os.environ.pop(var, None)
 
 
 _active: Optional[WorkloadIdentity] = None
@@ -168,8 +246,23 @@ def setup_from_env() -> Optional[WorkloadIdentity]:
         return None
     base = os.environ.get("RUNNER_TEMP") or "/tmp"
     audience = os.environ.get("ANTHROPIC_OIDC_AUDIENCE", "").strip() or DEFAULT_OIDC_AUDIENCE
-    _active = WorkloadIdentity(base, audience).start()
+    handle = WorkloadIdentity(base, audience)
+    _active = handle
+    atexit.register(cleanup)  # fallback; callers also call cleanup() in finally
+    try:
+        handle.start()
+    except BaseException:
+        cleanup()
+        raise
     return _active
+
+
+def cleanup() -> None:
+    """Delete all federation material. Safe to call more than once."""
+    global _active
+    handle, _active = _active, None
+    if handle is not None:
+        handle.stop()
 
 
 def refresh_if_active() -> None:
@@ -178,9 +271,14 @@ def refresh_if_active() -> None:
         _active.refresh()
 
 
+# Note: the federated Anthropic access token never reaches this code. The SDK and
+# the Claude Code CLI mint it internally and keep it in memory or in their cache
+# under ANTHROPIC_CONFIG_DIR, which cleanup() deletes. So there is nothing to mask
+# for it here; scrub() still covers ANTHROPIC_AUTH_TOKEN in bearer-token mode.
+
 # The Claude Code CLI reads PR-controlled content. It needs the identity token
 # file, not the runner's ability to mint new OIDC tokens for arbitrary audiences.
-CHILD_ENV_DENYLIST = ("ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+CHILD_ENV_DENYLIST = ("ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_ID_TOKEN_REQUEST_TOKEN", _MASK_FD_ENV)
 
 
 def child_env() -> dict:

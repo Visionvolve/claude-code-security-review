@@ -26,6 +26,7 @@ from claudecode.constants import (
     SUBPROCESS_TIMEOUT
 )
 from claudecode.logger import get_logger
+from claudecode.workload_identity import redact_exception
 from claudecode import workload_identity
 
 logger = get_logger(__name__)
@@ -299,7 +300,7 @@ class SimpleClaudeRunner:
         except subprocess.TimeoutExpired:
             return False, f"Claude Code execution timed out after {self.timeout_seconds // 60} minutes", {}
         except Exception as e:
-            return False, f"Claude Code execution error: {str(e)}", {}
+            return False, f"Claude Code execution error: {redact_exception(e)}", {}
     
     def _extract_security_findings(self, claude_output: Any) -> Dict[str, Any]:
         """Extract security findings from Claude's JSON response."""
@@ -359,7 +360,7 @@ class SimpleClaudeRunner:
         except FileNotFoundError:
             return False, "Claude Code is not installed or not in PATH"
         except Exception as e:
-            return False, f"Failed to check Claude Code: {str(e)}"
+            return False, f"Failed to check Claude Code: {redact_exception(e)}"
 
 
 
@@ -402,12 +403,12 @@ def initialize_clients() -> Tuple[GitHubActionClient, SimpleClaudeRunner]:
     try:
         github_client = GitHubActionClient()
     except Exception as e:
-        raise ConfigurationError(f'Failed to initialize GitHub client: {str(e)}')
+        raise ConfigurationError(f'Failed to initialize GitHub client: {redact_exception(e)}')
     
     try:
         claude_runner = SimpleClaudeRunner()
     except Exception as e:
-        raise ConfigurationError(f'Failed to initialize Claude runner: {str(e)}')
+        raise ConfigurationError(f'Failed to initialize Claude runner: {redact_exception(e)}')
         
     return github_client, claude_runner
 
@@ -444,7 +445,7 @@ def initialize_findings_filter(custom_filtering_instructions: Optional[str] = No
                 use_claude_filtering=False
             )
     except Exception as e:
-        raise ConfigurationError(f'Failed to initialize findings filter: {str(e)}')
+        raise ConfigurationError(f'Failed to initialize findings filter: {redact_exception(e)}')
 
 
 
@@ -537,13 +538,24 @@ def _is_finding_in_excluded_directory(finding: Dict[str, Any], github_client: Gi
 
 
 def main():
-    """Main execution function for GitHub Action."""
+    """Main execution function for GitHub Action.
+
+    Fork: always delete federation material (JWT file, profile, SDK/CLI
+    credentials cache) on the way out, whatever the exit path.
+    """
+    try:
+        _main()
+    finally:
+        workload_identity.cleanup()
+
+
+def _main():
     try:
         # Get environment configuration
         try:
             repo_name, pr_number = get_environment_config()
         except ConfigurationError as e:
-            print(json.dumps({'error': str(e)}))
+            print(workload_identity.scrub(json.dumps({'error': redact_exception(e)})))
             sys.exit(EXIT_CONFIGURATION_ERROR)
         
         # Load custom filtering instructions if provided
@@ -555,7 +567,7 @@ def main():
                     custom_filtering_instructions = f.read()
                     logger.info(f"Loaded custom filtering instructions from {filtering_file}")
             except Exception as e:
-                logger.warning(f"Failed to read filtering instructions file {filtering_file}: {e}")
+                logger.warning(f"Failed to read filtering instructions file {filtering_file}: {redact_exception(e)}")
         
         # Load custom security scan instructions if provided
         custom_scan_instructions = None
@@ -566,13 +578,13 @@ def main():
                     custom_scan_instructions = f.read()
                     logger.info(f"Loaded custom security scan instructions from {scan_file}")
             except Exception as e:
-                logger.warning(f"Failed to read security scan instructions file {scan_file}: {e}")
+                logger.warning(f"Failed to read security scan instructions file {scan_file}: {redact_exception(e)}")
         
         # Fork: keyless auth. Set up federation before anything talks to Claude.
         try:
             workload_identity.setup_from_env()
         except Exception as e:
-            print(json.dumps({'error': f'Workload identity federation setup failed: {str(e)}'}))
+            print(workload_identity.scrub(json.dumps({'error': f'Workload identity federation setup failed: {redact_exception(e)}'})))
             sys.exit(EXIT_CONFIGURATION_ERROR)
         print(f"[Info] Anthropic auth mode: {workload_identity.describe_auth_mode()}", file=sys.stderr)
         
@@ -580,20 +592,20 @@ def main():
         try:
             github_client, claude_runner = initialize_clients()
         except ConfigurationError as e:
-            print(json.dumps({'error': str(e)}))
+            print(workload_identity.scrub(json.dumps({'error': redact_exception(e)})))
             sys.exit(EXIT_CONFIGURATION_ERROR)
             
         # Initialize findings filter
         try:
             findings_filter = initialize_findings_filter(custom_filtering_instructions)
         except ConfigurationError as e:
-            print(json.dumps({'error': str(e)}))
+            print(workload_identity.scrub(json.dumps({'error': redact_exception(e)})))
             sys.exit(EXIT_CONFIGURATION_ERROR)
         
         # Validate Claude Code is available
         claude_ok, claude_error = claude_runner.validate_claude_available()
         if not claude_ok:
-            print(json.dumps({'error': f'Claude Code not available: {claude_error}'}))
+            print(workload_identity.scrub(json.dumps({'error': f'Claude Code not available: {claude_error}'})))
             sys.exit(EXIT_GENERAL_ERROR)
         
         # Get PR data
@@ -601,7 +613,7 @@ def main():
             pr_data = github_client.get_pr_data(repo_name, pr_number)
             pr_diff = github_client.get_pr_diff(repo_name, pr_number)
         except Exception as e:
-            print(json.dumps({'error': f'Failed to fetch PR data: {str(e)}'}))
+            print(workload_identity.scrub(json.dumps({'error': f'Failed to fetch PR data: {redact_exception(e)}'})))
             sys.exit(EXIT_GENERAL_ERROR)
                 
         # Generate security audit prompt
@@ -621,7 +633,7 @@ def main():
             success, error_msg, results = claude_runner.run_security_audit(repo_dir, prompt_without_diff)
         
         if not success:
-            print(json.dumps({'error': f'Security audit failed: {error_msg}'}))
+            print(workload_identity.scrub(json.dumps({'error': f'Security audit failed: {error_msg}'})))
             sys.exit(EXIT_GENERAL_ERROR)
         
         # Filter findings to reduce false positives
@@ -658,14 +670,14 @@ def main():
         }
         
         # Output JSON to stdout
-        print(json.dumps(output, indent=2))
+        print(workload_identity.scrub(json.dumps(output, indent=2)))
         
         # Exit with appropriate code
         high_severity_count = len([f for f in kept_findings if f.get('severity', '').upper() == 'HIGH'])
         sys.exit(EXIT_GENERAL_ERROR if high_severity_count > 0 else EXIT_SUCCESS)
         
     except Exception as e:
-        print(json.dumps({'error': f'Unexpected error: {str(e)}'}))
+        print(workload_identity.scrub(json.dumps({'error': f'Unexpected error: {redact_exception(e)}'})))
         sys.exit(EXIT_CONFIGURATION_ERROR)
 
 

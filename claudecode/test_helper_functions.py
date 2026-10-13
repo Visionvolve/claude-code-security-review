@@ -83,7 +83,9 @@ class TestHelperFunctions:
             initialize_clients()
         
         assert "Failed to initialize GitHub client" in str(exc_info.value)
-        assert "GitHub API error" in str(exc_info.value)
+        # Fork: generic exception text is redacted to the type name
+        assert "GitHub API error" not in str(exc_info.value)
+        assert "Failed to initialize GitHub client: Exception" in str(exc_info.value)
     
     @patch('claudecode.github_action_audit.GitHubActionClient')
     @patch('claudecode.github_action_audit.SimpleClaudeRunner')
@@ -96,7 +98,8 @@ class TestHelperFunctions:
             initialize_clients()
         
         assert "Failed to initialize Claude runner" in str(exc_info.value)
-        assert "Claude init error" in str(exc_info.value)
+        assert "Claude init error" not in str(exc_info.value)
+        assert "Failed to initialize Claude runner: Exception" in str(exc_info.value)
     
     @patch('claudecode.github_action_audit.FindingsFilter')
     def test_initialize_findings_filter_with_claude(self, mock_filter):

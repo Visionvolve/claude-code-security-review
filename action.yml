@@ -298,7 +298,11 @@ runs:
         echo "Updated PYTHONPATH: $PYTHONPATH"
         
         # Run from the action root directory so Python can find the claudecode module
-        python -u claudecode/github_action_audit.py > claudecode/claudecode-results.json 2>claudecode/claudecode-error.log || CLAUDECODE_EXIT_CODE=$?
+        # Fork: fd 3 is the step's real stdout. The Python process writes only
+        # ::add-mask:: commands there (CLAUDECODE_MASK_FD), so secrets it learns
+        # are masked even though its stdout/stderr go to files.
+        export CLAUDECODE_MASK_FD=3
+        python -u claudecode/github_action_audit.py 3>&1 > claudecode/claudecode-results.json 2>claudecode/claudecode-error.log || CLAUDECODE_EXIT_CODE=$?
         
         if [ -n "$CLAUDECODE_EXIT_CODE" ]; then
           echo "ClaudeCode exited with code $CLAUDECODE_EXIT_CODE (1 also means HIGH findings; the result file decides)"
@@ -375,6 +379,13 @@ runs:
         path: .claudecode-marker
         key: claudecode-${{ github.repository_id }}-pr-${{ github.event.pull_request.number }}-${{ github.sha }}
     
+    # Fork: the Python process deletes these itself (finally + atexit); this is the
+    # backstop if it was killed. JWT file, profile and SDK/CLI credentials cache.
+    - name: Remove workload identity material
+      if: always()
+      shell: bash
+      run: rm -rf "${RUNNER_TEMP:?}/claude-workload-identity"
+
     - name: Upload scan results
       if: always() && inputs.upload-results == 'true'
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2 pinned to commit hash

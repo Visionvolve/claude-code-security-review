@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from claudecode.claude_api_client import ClaudeAPIClient
 from claudecode.constants import DEFAULT_CLAUDE_MODEL
 from claudecode.logger import get_logger
+from claudecode.workload_identity import redact_exception
 
 logger = get_logger(__name__)
 
@@ -191,7 +192,7 @@ class FindingsFilter:
             except Exception as e:
                 # Fork: fail closed. Upstream disabled filtering and carried on,
                 # which hid auth errors behind a green job.
-                raise ClaudeAPIError(f"Failed to initialize Claude client: {str(e)}") from e
+                raise ClaudeAPIError(f"Failed to initialize Claude client: {redact_exception(e)}") from e
             # Validate API access
             valid, error = self.claude_client.validate_api_access()
             if not valid:
