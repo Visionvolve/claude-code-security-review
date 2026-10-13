@@ -12,7 +12,8 @@ requests>=2.28.0
 # findings_filter.py (uses re, built-in)
 
 # Anthropic SDK for Claude API-based false positive filtering
-anthropic>=0.39.0
+# Fork: >=0.125.0 for workload identity federation (credential chain + profiles)
+anthropic>=0.125.0
 
 # Note: Claude CLI tool must be installed separately
 # The claude command-line tool is required for security analysis

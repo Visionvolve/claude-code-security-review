@@ -26,6 +26,7 @@ from claudecode.constants import (
     SUBPROCESS_TIMEOUT
 )
 from claudecode.logger import get_logger
+from claudecode import workload_identity
 
 logger = get_logger(__name__)
 
@@ -231,6 +232,9 @@ class SimpleClaudeRunner:
             # Run Claude Code with retry logic
             NUM_RETRIES = 3
             for attempt in range(NUM_RETRIES):
+                # Fork: each CLI process gets a GitHub OIDC JWT nobody has exchanged
+                # yet (Anthropic accepts each jti once). No-op without federation.
+                workload_identity.refresh_if_active()
                 result = subprocess.run(
                     cmd,
                     input=prompt,  # Pass prompt via stdin
@@ -270,8 +274,18 @@ class SimpleClaudeRunner:
                         attempt == 0):
                         continue  # Retry
                     
+                    # Fork: an error result (auth failure, API error, ...) is a
+                    # failed review, never "no findings".
+                    if isinstance(parsed_result, dict) and parsed_result.get('is_error'):
+                        detail = str(parsed_result.get('result') or parsed_result.get('subtype') or 'unknown error')
+                        return False, f"Claude Code returned an error: {detail[:500]}", {}
+                    
                     # Extract security findings
                     parsed_results = self._extract_security_findings(parsed_result)
+                    if parsed_results.get('_parse_failed'):
+                        # Fork: no parseable review in Claude's answer. Upstream
+                        # reported this as zero findings.
+                        return False, "Claude Code output contained no parseable security review", {}
                     return True, "", parsed_results
                 else:
                     if attempt == 0:
@@ -308,7 +322,9 @@ class SimpleClaudeRunner:
                 'medium_severity': 0,
                 'low_severity': 0,
                 'review_completed': False,
-            }
+            },
+            # Fork: lets the caller tell "no review" apart from "no findings".
+            '_parse_failed': True,
         }
     
     
@@ -323,10 +339,11 @@ class SimpleClaudeRunner:
             )
             
             if result.returncode == 0:
-                # Also check if API key is configured
-                api_key = os.environ.get('ANTHROPIC_API_KEY', '')
-                if not api_key:
-                    return False, "ANTHROPIC_API_KEY environment variable is not set"
+                # Also check that a credential is configured (fork: API key,
+                # bearer token, or workload identity federation)
+                if workload_identity.describe_auth_mode() == 'none':
+                    return False, ("No Anthropic credentials configured: set ANTHROPIC_API_KEY, "
+                                   "ANTHROPIC_AUTH_TOKEN, or workload identity federation")
                 return True, ""
             else:
                 error_msg = f"Claude Code returned exit code {result.returncode}"
@@ -409,10 +426,10 @@ def initialize_findings_filter(custom_filtering_instructions: Optional[str] = No
     try:
         # Check if we should use Claude API filtering
         use_claude_filtering = os.environ.get('ENABLE_CLAUDE_FILTERING', 'false').lower() == 'true'
-        api_key = os.environ.get('ANTHROPIC_API_KEY')
+        api_key = os.environ.get('ANTHROPIC_API_KEY') or None
         
-        if use_claude_filtering and api_key:
-            # Use full filtering with Claude API
+        if use_claude_filtering and workload_identity.describe_auth_mode() != 'none':
+            # Use full filtering with Claude API (fork: any auth mode)
             return FindingsFilter(
                 use_hard_exclusions=True,
                 use_claude_filtering=True,
@@ -550,6 +567,14 @@ def main():
             except Exception as e:
                 logger.warning(f"Failed to read security scan instructions file {scan_file}: {e}")
         
+        # Fork: keyless auth. Set up federation before anything talks to Claude.
+        try:
+            workload_identity.setup_from_env()
+        except Exception as e:
+            print(json.dumps({'error': f'Workload identity federation setup failed: {str(e)}'}))
+            sys.exit(EXIT_CONFIGURATION_ERROR)
+        print(f"[Info] Anthropic auth mode: {workload_identity.describe_auth_mode()}", file=sys.stderr)
+        
         # Initialize components
         try:
             github_client, claude_runner = initialize_clients()
@@ -618,6 +643,8 @@ def main():
         output = {
             'pr_number': pr_number,
             'repo': repo_name,
+            # Fork: explicit marker the action checks before reporting success.
+            'review_status': 'completed',
             'findings': kept_findings,
             'analysis_summary': results.get('analysis_summary', {}),
             'filtering_summary': {

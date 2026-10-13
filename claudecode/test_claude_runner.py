@@ -64,7 +64,7 @@ class TestSimpleClaudeRunner:
             success, error = runner.validate_claude_available()
         
         assert success is False
-        assert 'ANTHROPIC_API_KEY environment variable is not set' in error
+        assert 'No Anthropic credentials configured' in error
     
     @patch('subprocess.run')
     def test_validate_claude_available_not_installed(self, mock_run):
@@ -177,7 +177,7 @@ class TestSimpleClaudeRunner:
         """Test warning for large prompts."""
         mock_run.return_value = Mock(
             returncode=0,
-            stdout='{"findings": []}',
+            stdout=json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": '{"findings": []}'}),
             stderr=''
         )
         
@@ -201,7 +201,7 @@ class TestSimpleClaudeRunner:
         # First call fails, second succeeds
         mock_run.side_effect = [
             Mock(returncode=1, stdout='', stderr='Temporary error'),
-            Mock(returncode=0, stdout='{"findings": []}', stderr='')
+            Mock(returncode=0, stdout=json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": '{"findings": []}'}), stderr='')
         ]
         
         runner = SimpleClaudeRunner()

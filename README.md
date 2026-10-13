@@ -1,5 +1,63 @@
 # Claude Code Security Reviewer
 
+## Visionvolve fork
+
+This is Visionvolve's fork of
+[anthropics/claude-code-security-review](https://github.com/anthropics/claude-code-security-review).
+Upstream only authenticates with a static API key (`x-api-key`) and turns auth or API
+errors into a warning and a green check. The fork changes two things, and nothing else:
+
+1. **Keyless auth.** New inputs, exactly one auth method per run:
+   - `anthropic-federation-rule-id`, `anthropic-organization-id`,
+     `anthropic-service-account-id`, `anthropic-workspace-id` (optional
+     `anthropic-oidc-audience`, default `https://api.anthropic.com`): **Workload Identity
+     Federation**. The action fetches the job's GitHub OIDC token, writes it to a 0600
+     file under `RUNNER_TEMP` and points the Claude Code CLI and the Python SDK at it
+     (`ANTHROPIC_IDENTITY_TOKEN_FILE` plus a minimal `oidc_federation` profile, the same
+     approach as `anthropics/claude-code-action`). Both exchange it at `/v1/oauth/token`
+     themselves and send `Authorization: Bearer`, and the JWT file is refreshed every
+     4 minutes, so reviews can outlive the access-token lifetime. Requires
+     `permissions: id-token: write`.
+   - `claude-auth-token`: a bearer token you minted yourself (`ANTHROPIC_AUTH_TOKEN`).
+     Not refreshed.
+   - `claude-api-key`: the upstream behaviour, now optional.
+
+   Configuring none or more than one fails the job. `ANTHROPIC_API_KEY` is never
+   exported empty (an empty value would shadow federation).
+2. **Fail closed.** The job fails on any auth or API error, on Claude Code returning an
+   error result, on output with no parseable review, and if the Python filter cannot reach
+   the API. It passes only when the result file says `"review_status": "completed"`, with
+   a findings array: "N findings" or an explicit "no findings". The API validation call now
+   uses the configured model; upstream hard-coded the retired `claude-3-5-haiku-20241022`,
+   so that call always failed and filtering was silently switched off.
+
+Also: a run skipped because the PR was already reviewed now emits a `::notice::`. Set
+`run-every-commit: true` to review every push.
+
+```yaml
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+steps:
+  - uses: actions/checkout@v4
+    with: { fetch-depth: 0 }
+  - uses: Visionvolve/claude-code-security-review@<full commit SHA>
+    with:
+      anthropic-federation-rule-id: fdrl_...
+      anthropic-organization-id: 00000000-0000-0000-0000-000000000000
+      anthropic-service-account-id: svac_...
+      anthropic-workspace-id: wrkspc_...
+```
+
+**Syncing upstream:** `git fetch upstream && git merge upstream/main`, resolve conflicts
+in `action.yml` (auth and result-handling blocks), `claudecode/claude_api_client.py`,
+`claudecode/findings_filter.py` and `claudecode/github_action_audit.py`, run
+`pytest claudecode` (including `test_fork_auth.py`), push, then bump the pinned SHA in
+consumers after reading the diff.
+
+---
+
 An AI-powered security review GitHub Action using Claude to analyze code changes for security vulnerabilities. This action provides intelligent, context-aware security analysis for pull requests using Anthropic's Claude Code tool for deep semantic security analysis. See our blog post [here](https://www.anthropic.com/news/automate-security-reviews-with-claude-code) for more details.
 
 ## Features

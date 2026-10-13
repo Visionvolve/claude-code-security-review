@@ -14,6 +14,7 @@ from claudecode.constants import (
 )
 from claudecode.json_parser import parse_json_with_fallbacks
 from claudecode.logger import get_logger
+from claudecode import workload_identity
 
 logger = get_logger(__name__)
 
@@ -38,17 +39,33 @@ class ClaudeAPIClient:
         self.timeout_seconds = timeout_seconds or DEFAULT_TIMEOUT_SECONDS
         self.max_retries = max_retries or DEFAULT_MAX_RETRIES
         
-        # Get API key from environment or parameter
-        self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-        if not self.api_key:
+        # Visionvolve fork: three auth modes, never mixed.
+        #   1. api_key argument / ANTHROPIC_API_KEY  -> x-api-key (upstream behaviour)
+        #   2. ANTHROPIC_AUTH_TOKEN                  -> Authorization: Bearer
+        #      (e.g. a short-lived sk-ant-oat01- token from a WIF exchange)
+        #   3. Workload Identity Federation env/profile -> SDK credential chain,
+        #      which exchanges and refreshes tokens itself.
+        self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY") or None
+        auth_token = os.environ.get("ANTHROPIC_AUTH_TOKEN") or None
+        if self.api_key:
+            self.auth_mode = "api-key"
+            self.client = Anthropic(api_key=self.api_key)
+        elif auth_token:
+            self.auth_mode = "bearer-token"
+            self.client = Anthropic(auth_token=auth_token)
+        elif workload_identity.is_configured():
+            workload_identity.setup_from_env()
+            workload_identity.refresh_if_active()
+            self.auth_mode = "workload-identity-federation"
+            # No arguments: the SDK resolves the federation profile/env vars.
+            self.client = Anthropic()
+        else:
             raise ValueError(
-                "No Anthropic API key found. Please set ANTHROPIC_API_KEY environment variable "
-                "or provide api_key parameter."
+                "No Anthropic credentials found. Set ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, "
+                "or the workload identity federation variables."
             )
         
-        # Initialize Anthropic client
-        self.client = Anthropic(api_key=self.api_key)
-        logger.info("Claude API client initialized successfully")
+        logger.info(f"Claude API client initialized (auth: {self.auth_mode})")
     
     def validate_api_access(self) -> Tuple[bool, str]:
         """Validate that API access is working.
@@ -59,7 +76,9 @@ class ClaudeAPIClient:
         try:
             # Simple test call to verify API access
             self.client.messages.create(
-                model="claude-3-5-haiku-20241022",
+                # Fork: validate with the configured model (the upstream hard-coded
+                # claude-3-5-haiku-20241022 is retired, so validation always failed).
+                model=self.model,
                 max_tokens=10,
                 messages=[{"role": "user", "content": "Hello"}],
                 timeout=10

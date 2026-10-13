@@ -24,9 +24,40 @@ inputs:
     default: '20'
   
   claude-api-key:
-    description: 'Anthropic Claude API key for security analysis'
-    required: true
+    description: 'Anthropic Claude API key (sent as x-api-key). Visionvolve fork: optional; prefer workload identity federation.'
+    required: false
     default: ''
+
+  # --- Visionvolve fork: keyless auth -------------------------------------
+  claude-auth-token:
+    description: 'Bearer token for the Claude API (e.g. a short-lived sk-ant-oat01- token from your own WIF exchange). Sent as Authorization: Bearer. Not refreshed.'
+    required: false
+    default: ''
+
+  anthropic-federation-rule-id:
+    description: 'Workload identity federation rule ID (fdrl_...). With anthropic-organization-id, authenticates with the job''s GitHub OIDC token instead of a key. Requires id-token: write.'
+    required: false
+    default: ''
+
+  anthropic-organization-id:
+    description: 'Anthropic organization ID (UUID) for workload identity federation'
+    required: false
+    default: ''
+
+  anthropic-service-account-id:
+    description: 'Anthropic service account ID (svac_...) for workload identity federation'
+    required: false
+    default: ''
+
+  anthropic-workspace-id:
+    description: 'Anthropic workspace ID (wrkspc_...) to scope federated tokens to'
+    required: false
+    default: ''
+
+  anthropic-oidc-audience:
+    description: 'Audience requested on the GitHub OIDC token'
+    required: false
+    default: 'https://api.anthropic.com'
 
   claude-model:
     description: 'Claude model to use for security analysis (e.g., claude-sonnet-4-20250514)'
@@ -102,7 +133,7 @@ runs:
           # Now check cache - if ClaudeCode has already run, disable unless run-every-commit is true
           # Check if marker file exists (cache may have been restored from a different SHA)
           if [ "$RUN_EVERY_COMMIT" != "true" ] && [ -f ".claudecode-marker/marker.json" ]; then
-            echo "ClaudeCode has already run on PR #$PR_NUMBER (found marker file), forcing disable to avoid false positives"
+            echo "::notice::Security review SKIPPED: it already ran on PR #$PR_NUMBER (marker file). Set run-every-commit: true to review every push."
             ENABLE_CLAUDECODE="false"
           elif [ "$RUN_EVERY_COMMIT" == "true" ] && [ -f ".claudecode-marker/marker.json" ]; then
             echo "ClaudeCode has already run on PR #$PR_NUMBER but run-every-commit is enabled, running again"
@@ -181,7 +212,16 @@ runs:
         GITHUB_TOKEN: ${{ github.token }}
         GITHUB_REPOSITORY: ${{ github.repository }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
-        ANTHROPIC_API_KEY: ${{ inputs.claude-api-key }}
+        # Fork: credentials arrive under INPUT_* names and are exported below only
+        # when non-empty. An exported-but-empty ANTHROPIC_API_KEY would shadow
+        # federation in the SDK and CLI credential chain.
+        INPUT_CLAUDE_API_KEY: ${{ inputs.claude-api-key }}
+        INPUT_CLAUDE_AUTH_TOKEN: ${{ inputs.claude-auth-token }}
+        INPUT_FEDERATION_RULE_ID: ${{ inputs.anthropic-federation-rule-id }}
+        INPUT_ORGANIZATION_ID: ${{ inputs.anthropic-organization-id }}
+        INPUT_SERVICE_ACCOUNT_ID: ${{ inputs.anthropic-service-account-id }}
+        INPUT_WORKSPACE_ID: ${{ inputs.anthropic-workspace-id }}
+        INPUT_OIDC_AUDIENCE: ${{ inputs.anthropic-oidc-audience }}
         ENABLE_CLAUDE_FILTERING: 'true' 
         EXCLUDE_DIRECTORIES: ${{ inputs.exclude-directories }}
         FALSE_POSITIVE_FILTERING_INSTRUCTIONS: ${{ inputs.false-positive-filtering-instructions }}
@@ -203,15 +243,40 @@ runs:
           exit 0
         fi
         
-        # Validate API key is provided
-        if [ -z "$ANTHROPIC_API_KEY" ]; then
-          echo "::error::ANTHROPIC_API_KEY is not set. Please provide the claude-api-key input to the action."
-          echo "Example usage:"
-          echo "  - uses: anthropics/claude-code-security-reviewer@main"
-          echo "    with:"
-          echo "      claude-api-key: \$\{{ secrets.ANTHROPIC_API_KEY }}"
+        # Fork: select exactly one auth method. Never mix: a static key would
+        # silently shadow federation.
+        unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN \
+              ANTHROPIC_FEDERATION_RULE_ID ANTHROPIC_ORGANIZATION_ID \
+              ANTHROPIC_SERVICE_ACCOUNT_ID ANTHROPIC_WORKSPACE_ID ANTHROPIC_OIDC_AUDIENCE
+        AUTH_METHODS=0
+        [ -n "$INPUT_CLAUDE_API_KEY" ] && AUTH_METHODS=$((AUTH_METHODS+1))
+        [ -n "$INPUT_CLAUDE_AUTH_TOKEN" ] && AUTH_METHODS=$((AUTH_METHODS+1))
+        [ -n "$INPUT_FEDERATION_RULE_ID$INPUT_ORGANIZATION_ID" ] && AUTH_METHODS=$((AUTH_METHODS+1))
+        if [ "$AUTH_METHODS" -ne 1 ]; then
+          echo "::error::Configure exactly one Anthropic auth method: claude-api-key, claude-auth-token, or anthropic-federation-rule-id + anthropic-organization-id (found $AUTH_METHODS)."
           exit 1
         fi
+        if [ -n "$INPUT_CLAUDE_API_KEY" ]; then
+          echo "::add-mask::$INPUT_CLAUDE_API_KEY"
+          export ANTHROPIC_API_KEY="$INPUT_CLAUDE_API_KEY"
+          echo "Anthropic auth: API key (x-api-key)"
+        elif [ -n "$INPUT_CLAUDE_AUTH_TOKEN" ]; then
+          echo "::add-mask::$INPUT_CLAUDE_AUTH_TOKEN"
+          export ANTHROPIC_AUTH_TOKEN="$INPUT_CLAUDE_AUTH_TOKEN"
+          echo "Anthropic auth: bearer token (Authorization: Bearer)"
+        else
+          if [ -z "$INPUT_FEDERATION_RULE_ID" ] || [ -z "$INPUT_ORGANIZATION_ID" ]; then
+            echo "::error::Workload identity federation needs both anthropic-federation-rule-id and anthropic-organization-id."
+            exit 1
+          fi
+          export ANTHROPIC_FEDERATION_RULE_ID="$INPUT_FEDERATION_RULE_ID"
+          export ANTHROPIC_ORGANIZATION_ID="$INPUT_ORGANIZATION_ID"
+          [ -n "$INPUT_SERVICE_ACCOUNT_ID" ] && export ANTHROPIC_SERVICE_ACCOUNT_ID="$INPUT_SERVICE_ACCOUNT_ID"
+          [ -n "$INPUT_WORKSPACE_ID" ] && export ANTHROPIC_WORKSPACE_ID="$INPUT_WORKSPACE_ID"
+          export ANTHROPIC_OIDC_AUDIENCE="${INPUT_OIDC_AUDIENCE:-https://api.anthropic.com}"
+          echo "Anthropic auth: workload identity federation (rule $ANTHROPIC_FEDERATION_RULE_ID)"
+        fi
+        unset INPUT_CLAUDE_API_KEY INPUT_CLAUDE_AUTH_TOKEN
                 
         # Set timeout
         export CLAUDE_TIMEOUT="$CLAUDECODE_TIMEOUT"
@@ -225,7 +290,6 @@ runs:
         echo "Current directory: $(pwd)"
         echo "Python version: $(python --version)"
         echo "Claude CLI version: $(claude --version 2>&1 || echo 'Claude CLI not found')"
-        echo "ANTHROPIC_API_KEY set: $(if [ -n "$ANTHROPIC_API_KEY" ]; then echo 'Yes'; else echo 'No'; fi)"
         echo "GITHUB_REPOSITORY: $GITHUB_REPOSITORY"
         echo "PR_NUMBER: $PR_NUMBER"
         echo "Python path: $PYTHONPATH"
@@ -242,52 +306,47 @@ runs:
         python -u claudecode/github_action_audit.py > claudecode/claudecode-results.json 2>claudecode/claudecode-error.log || CLAUDECODE_EXIT_CODE=$?
         
         if [ -n "$CLAUDECODE_EXIT_CODE" ]; then
-          echo "::warning::ClaudeCode exited with code $CLAUDECODE_EXIT_CODE"
+          echo "ClaudeCode exited with code $CLAUDECODE_EXIT_CODE (1 also means HIGH findings; the result file decides)"
         else
-          echo "ClaudeCode scan completed successfully"
+          echo "ClaudeCode scan completed"
         fi
         
-        # Parse ClaudeCode results and count findings regardless of exit code
-        if [ -f claudecode/claudecode-results.json ]; then
-          FILE_SIZE=$(wc -c < claudecode/claudecode-results.json)
-          echo "ClaudeCode results file size: $FILE_SIZE bytes"
-          
-          # Check if file is empty or too small
-          if [ "$FILE_SIZE" -lt 2 ]; then
-            echo "::warning::ClaudeCode results file is empty or invalid (size: $FILE_SIZE bytes)"
-            echo "::warning::ClaudeCode may have failed silently. Check claudecode-error.log"
-            if [ -f claudecode/claudecode-error.log ]; then
-              echo "Error log contents:"
-              cat claudecode/claudecode-error.log
-            fi
-            echo "findings_count=0" >> $GITHUB_OUTPUT
-          else
-            echo "ClaudeCode results preview:"
-            head -n 300 claudecode/claudecode-results.json || echo "Unable to preview results"
-                        
-            # Check if the result is an error
-            if jq -e '.error' claudecode/claudecode-results.json > /dev/null 2>&1; then
-              ERROR_MSG=$(jq -r '.error' claudecode/claudecode-results.json)
-              echo "::warning::ClaudeCode error: $ERROR_MSG"
-              echo "findings_count=0" >> $GITHUB_OUTPUT
-            else
-              # Use -r to get raw output and handle potential null/missing findings array
-              CLAUDECODE_FINDINGS_COUNT=$(jq -r '.findings | if . == null then 0 else length end' claudecode/claudecode-results.json 2>/dev/null || echo "0")
-              echo "::debug::Extracted ClaudeCode findings count: $CLAUDECODE_FINDINGS_COUNT"
-              echo "findings_count=$CLAUDECODE_FINDINGS_COUNT" >> $GITHUB_OUTPUT
-              echo "ClaudeCode found $CLAUDECODE_FINDINGS_COUNT security issues"
-              
-              # Also create findings.json for PR comment script
-              jq '.findings // []' claudecode/claudecode-results.json > findings.json || echo '[]' > findings.json
-            fi
-          fi
-        else
-          echo "::warning::ClaudeCode results file not found"
+        # Fork: fail closed. Success means the result file is a completed review
+        # (review_status == "completed", findings is an array, no .error). Anything
+        # else -- auth/API error, empty or unparseable output -- fails the job.
+        # Upstream turned all of these into a warning and a green check.
+        SCAN_FAILED=""
+        if [ ! -f claudecode/claudecode-results.json ] || [ "$(wc -c < claudecode/claudecode-results.json)" -lt 2 ]; then
+          SCAN_FAILED="ClaudeCode produced no results file"
+        elif ! jq -e . claudecode/claudecode-results.json > /dev/null 2>&1; then
+          SCAN_FAILED="ClaudeCode results file is not valid JSON"
+        elif jq -e '.error' claudecode/claudecode-results.json > /dev/null 2>&1; then
+          SCAN_FAILED="ClaudeCode error: $(jq -r '.error' claudecode/claudecode-results.json | head -c 1000)"
+        elif ! jq -e '.review_status == "completed" and (.findings | type == "array")' claudecode/claudecode-results.json > /dev/null 2>&1; then
+          SCAN_FAILED="ClaudeCode did not report a completed review"
+        fi
+        
+        if [ -n "$SCAN_FAILED" ]; then
+          echo "::error::Security review FAILED: $SCAN_FAILED"
           if [ -f claudecode/claudecode-error.log ]; then
-            echo "Error log contents:"
-            cat claudecode/claudecode-error.log
+            echo "Error log (tail):"
+            tail -n 60 claudecode/claudecode-error.log
           fi
-          echo "findings_count=0" >> $GITHUB_OUTPUT
+          cp claudecode/claudecode-results.json ${{ github.workspace }}/claudecode-results.json 2>/dev/null || true
+          cp claudecode/claudecode-error.log ${{ github.workspace }}/claudecode-error.log 2>/dev/null || true
+          echo "::endgroup::"
+          exit 1
+        fi
+        
+        echo "ClaudeCode results preview:"
+        head -n 300 claudecode/claudecode-results.json || echo "Unable to preview results"
+        CLAUDECODE_FINDINGS_COUNT=$(jq -r '.findings | length' claudecode/claudecode-results.json)
+        echo "findings_count=$CLAUDECODE_FINDINGS_COUNT" >> $GITHUB_OUTPUT
+        jq '.findings' claudecode/claudecode-results.json > findings.json
+        if [ "$CLAUDECODE_FINDINGS_COUNT" -eq 0 ]; then
+          echo "Security review completed: no findings."
+        else
+          echo "Security review completed: $CLAUDECODE_FINDINGS_COUNT finding(s)."
         fi
         
         # Always copy files to workspace root regardless of the outcome

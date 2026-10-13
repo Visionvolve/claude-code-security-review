@@ -261,7 +261,7 @@ index 8901234..5678901 100644
         
         mock_run.side_effect = [
             Mock(returncode=0, stdout='claude version 1.0.0', stderr=''),
-            Mock(returncode=0, stdout=json.dumps({"findings": claude_findings}), stderr='')
+            Mock(returncode=0, stdout=json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": json.dumps({"findings": claude_findings})}), stderr='')
         ]
         
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -337,7 +337,7 @@ index 8901234..5678901 100644
         # Claude finds no issues
         mock_run.side_effect = [
             Mock(returncode=0, stdout='claude version 1.0.0', stderr=''),
-            Mock(returncode=0, stdout='{"findings": [], "analysis_summary": {"review_completed": true}}', stderr='')
+            Mock(returncode=0, stdout=json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": '{"findings": [], "analysis_summary": {"review_completed": true}}'}), stderr='')
         ]
         
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -427,7 +427,7 @@ index 0000000..1234567
         # Claude handles it gracefully
         mock_run.side_effect = [
             Mock(returncode=0, stdout='claude version 1.0.0', stderr=''),
-            Mock(returncode=0, stdout='{"findings": []}', stderr='')
+            Mock(returncode=0, stdout=json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": '{"findings": []}'}), stderr='')
         ]
         
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -506,7 +506,7 @@ index 1234567..8901234 100644
         
         mock_run.side_effect = [
             Mock(returncode=0, stdout='claude version 1.0.0', stderr=''),
-            Mock(returncode=0, stdout='{"findings": []}', stderr='')
+            Mock(returncode=0, stdout=json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": '{"findings": []}'}), stderr='')
         ]
         
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -154,6 +154,10 @@ class HardExclusionRules:
         return None
 
 
+class ClaudeAPIError(RuntimeError):
+    """Fork: raised on any Claude API/auth failure so the job fails instead of going green."""
+
+
 class FindingsFilter:
     """Main filter class for security findings."""
     
@@ -184,15 +188,14 @@ class FindingsFilter:
                     model=model,
                     api_key=api_key
                 )
-                # Validate API access
-                valid, error = self.claude_client.validate_api_access()
-                if not valid:
-                    logger.warning(f"Claude API validation failed: {error}")
-                    self.claude_client = None
-                    self.use_claude_filtering = False
             except Exception as e:
-                logger.error(f"Failed to initialize Claude client: {str(e)}")
-                self.use_claude_filtering = False
+                # Fork: fail closed. Upstream disabled filtering and carried on,
+                # which hid auth errors behind a green job.
+                raise ClaudeAPIError(f"Failed to initialize Claude client: {str(e)}") from e
+            # Validate API access
+            valid, error = self.claude_client.validate_api_access()
+            if not valid:
+                raise ClaudeAPIError(f"Claude API validation failed: {error}")
     
     def filter_findings(self, 
                        findings: List[Dict[str, Any]],
@@ -295,15 +298,8 @@ class FindingsFilter:
                         findings_after_claude.append(enriched_finding)
                         stats.kept_findings += 1
                 else:
-                    # Claude API call failed for this finding - keep it with warning
-                    logger.warning(f"Claude API call failed for finding {orig_idx}: {error_msg}")
-                    enriched_finding = finding.copy()
-                    enriched_finding['_filter_metadata'] = {
-                        'confidence_score': 10.0,  # Default high confidence
-                        'justification': f'Claude API failed: {error_msg}',
-                    }
-                    findings_after_claude.append(enriched_finding)
-                    stats.kept_findings += 1
+                    # Fork: an API error is a failed review, not a kept finding.
+                    raise ClaudeAPIError(f"Claude API call failed for finding {orig_idx}: {error_msg}")
         else:
             # Claude filtering disabled or no client - keep all findings from hard filter
             for orig_idx, finding in findings_after_hard:
